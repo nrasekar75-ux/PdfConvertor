@@ -1,0 +1,165 @@
+import { useState } from 'react';
+import { Upload, Download, Loader } from 'lucide-react';
+import { splitPdf, downloadBlob, getPdfInfo } from '../../services/pdfService';
+import { ToolLayout } from '../ToolLayout';
+
+export function SplitPdf() {
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [startPage, setStartPage] = useState(1);
+  const [endPage, setEndPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(0);
+  const [error, setError] = useState('');
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (!selectedFile) return;
+
+    try {
+      setError('');
+      setFile(selectedFile);
+      const info = await getPdfInfo(selectedFile);
+      setTotalPages(info.pages);
+      setStartPage(1);
+      setEndPage(info.pages);
+    } catch (err) {
+      setError('Failed to read PDF file');
+      setFile(null);
+    }
+  };
+
+  const handleSplit = async () => {
+    if (!file || startPage < 1 || endPage > totalPages || startPage > endPage) {
+      setError('Invalid page range');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const blob = await splitPdf(file, startPage, endPage);
+      const filename = `${file.name.replace('.pdf', '')}-pages-${startPage}-${endPage}.pdf`;
+      downloadBlob(blob, filename);
+    } catch (err) {
+      setError('Split failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <ToolLayout
+      toolName="Split PDF"
+      toolDescription="Extract specific pages or ranges from your PDF"
+    >
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="bg-white rounded-lg p-8 shadow-md">
+          <label className="block">
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-500 transition cursor-pointer">
+              <Upload className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-600 font-medium">Click to upload PDF or drag and drop</p>
+              <p className="text-gray-400 text-sm">PDF files up to 50MB</p>
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+            </div>
+          </label>
+
+          {file && (
+            <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+              <p className="font-medium text-gray-900">{file.name}</p>
+              <p className="text-sm text-gray-600">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+              <p className="text-sm text-gray-600">Total pages: {totalPages}</p>
+            </div>
+          )}
+
+          {file && (
+            <div className="mt-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-900 mb-2">
+                  Start Page
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max={totalPages}
+                  value={startPage}
+                  onChange={(e) => setStartPage(parseInt(e.target.value) || 1)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-900 mb-2">
+                  End Page
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max={totalPages}
+                  value={endPage}
+                  onChange={(e) => setEndPage(parseInt(e.target.value) || totalPages)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <p className="text-sm text-gray-600">
+                Extracting pages {startPage} to {endPage}
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <div className="mt-4 p-3 bg-red-50 text-red-700 rounded-lg text-sm">
+              {error}
+            </div>
+          )}
+
+          <button
+            onClick={handleSplit}
+            disabled={!file || loading}
+            className="w-full mt-6 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition font-medium flex items-center justify-center space-x-2"
+          >
+            {loading ? (
+              <>
+                <Loader className="w-5 h-5 animate-spin" />
+                <span>Splitting...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-5 h-5" />
+                <span>Split PDF</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        <div className="bg-white rounded-lg p-8 shadow-md">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">About this tool</h3>
+          <ul className="space-y-3 text-gray-600">
+            <li className="flex space-x-3">
+              <span className="text-blue-600">✓</span>
+              <span>Extract specific pages from PDF</span>
+            </li>
+            <li className="flex space-x-3">
+              <span className="text-blue-600">✓</span>
+              <span>Define page range easily</span>
+            </li>
+            <li className="flex space-x-3">
+              <span className="text-blue-600">✓</span>
+              <span>Preserve original quality</span>
+            </li>
+            <li className="flex space-x-3">
+              <span className="text-blue-600">✓</span>
+              <span>Fast extraction process</span>
+            </li>
+            <li className="flex space-x-3">
+              <span className="text-blue-600">✓</span>
+              <span>Instant download</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </ToolLayout>
+  );
+}
