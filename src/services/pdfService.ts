@@ -148,37 +148,189 @@ export async function compressPdf(file: File): Promise<Blob> {
   }
 }
 
+interface TextItem {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface PageLayout {
+  width: number;
+  height: number;
+  items: TextItem[];
+}
+
+async function extractPageLayout(page: any): Promise<PageLayout> {
+  const viewport = page.getViewport({ scale: 1 });
+  const textContent = await page.getTextContent();
+
+  const items = textContent.items
+    .filter((item: any) => item.str && item.str.trim())
+    .map((item: any) => ({
+      str: item.str,
+      x: item.x,
+      y: item.y,
+      width: item.width || 0,
+      height: item.height || 0
+    }));
+
+  return {
+    width: viewport.width,
+    height: viewport.height,
+    items
+  };
+}
+
+function detectColumns(layout: PageLayout): number {
+  if (layout.items.length === 0) return 1;
+
+  const xPositions = layout.items.map(item => item.x);
+  const uniqueX = [...new Set(xPositions.map(x => Math.round(x / 10) * 10))];
+  uniqueX.sort((a, b) => a - b);
+
+  if (uniqueX.length > 3) {
+    const gaps = [];
+    for (let i = 1; i < uniqueX.length; i++) {
+      gaps.push(uniqueX[i] - uniqueX[i - 1]);
+    }
+    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const largeGaps = gaps.filter(g => g > avgGap * 2).length;
+    return Math.min(largeGaps + 1, 3);
+  }
+
+  return uniqueX.length > 1 ? 2 : 1;
+}
+
+function groupItemsByLine(items: TextItem[]): TextItem[][] {
+  const lines: TextItem[][] = [];
+  const tolerance = 5;
+
+  const sortedItems = [...items].sort((a, b) => {
+    const aDiff = Math.abs(a.y - b.y);
+    const bDiff = Math.abs(a.y - b.y);
+    if (Math.abs(aDiff - bDiff) > tolerance) return b.y - a.y;
+    return a.x - b.x;
+  });
+
+  for (const item of sortedItems) {
+    let found = false;
+    for (const line of lines) {
+      if (Math.abs(line[0].y - item.y) < tolerance) {
+        line.push(item);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      lines.push([item]);
+    }
+  }
+
+  lines.forEach(line => line.sort((a, b) => a.x - b.x));
+  return lines;
+}
+
 export async function pdfToWord(file: File): Promise<Blob> {
   try {
+    const { Document, Packer, Paragraph, Table, TableCell, TableRow, AlignmentType } = await import('docx');
+
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
 
-    let fullText = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
+    const sections: any[] = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       try {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageText = textContent.items
-          .map((item: any) => (typeof item.str === 'string' ? item.str : ''))
-          .join(' ');
-        fullText += pageText + '\n\n';
+        const page = await pdf.getPage(pageNum);
+        const layout = await extractPageLayout(page);
+        const columns = detectColumns(layout);
+
+        if (layout.items.length === 0) {
+          continue;
+        }
+
+        const lines = groupItemsByLine(layout.items);
+
+        if (columns === 1) {
+          const paragraphs = lines.map(line => {
+            const text = line.map(item => item.str).join(' ');
+            return new Paragraph({
+              text,
+              spacing: { line: 240 }
+            });
+          });
+          sections.push(...paragraphs);
+        } else {
+          const itemsByColumn: TextItem[][] = [[], []];
+          const midX = layout.width / 2;
+
+          for (const item of layout.items) {
+            if (item.x < midX) {
+              itemsByColumn[0].push(item);
+            } else {
+              itemsByColumn[1].push(item);
+            }
+          }
+
+          const col1Lines = groupItemsByLine(itemsByColumn[0]);
+          const col2Lines = groupItemsByLine(itemsByColumn[1]);
+          const maxLines = Math.max(col1Lines.length, col2Lines.length);
+
+          const rows = [];
+          for (let i = 0; i < maxLines; i++) {
+            const col1Text = col1Lines[i]?.map(item => item.str).join(' ') || '';
+            const col2Text = col2Lines[i]?.map(item => item.str).join(' ') || '';
+
+            rows.push(
+              new TableRow({
+                children: [
+                  new TableCell({
+                    children: [new Paragraph(col1Text || ' ')],
+                    margins: { top: 100, bottom: 100, left: 100, right: 100 }
+                  }),
+                  new TableCell({
+                    children: [new Paragraph(col2Text || ' ')],
+                    margins: { top: 100, bottom: 100, left: 100, right: 100 }
+                  })
+                ]
+              })
+            );
+          }
+
+          if (rows.length > 0) {
+            sections.push(
+              new Table({
+                rows,
+                width: { size: 100, type: 'pct' },
+                borders: {
+                  top: { style: 'none' },
+                  bottom: { style: 'none' },
+                  left: { style: 'none' },
+                  right: { style: 'none' },
+                  insideHorizontal: { style: 'none' },
+                  insideVertical: { style: 'none' }
+                }
+              })
+            );
+          }
+        }
+
+        if (pageNum < pdf.numPages) {
+          sections.push(new Paragraph({ text: '', pageBreakBefore: true }));
+        }
       } catch (err) {
-        console.error(`Error extracting text from page ${i}:`, err);
+        console.error(`Error extracting page ${pageNum}:`, err);
       }
     }
 
-    const docx = `<?xml version="1.0" encoding="UTF-8"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body>
-    <w:p>
-      <w:r>
-        <w:t>${escapeXml(fullText)}</w:t>
-      </w:r>
-    </w:p>
-  </w:body>
-</w:document>`;
+    const doc = new Document({
+      sections: [{ children: sections }]
+    });
 
-    return new Blob([docx], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const buffer = await Packer.toBuffer(doc);
+    return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   } catch (err) {
     console.error('PDF to Word error:', err);
     throw new Error('Failed to convert PDF to Word');
@@ -215,15 +367,6 @@ export async function pdfToExcel(file: File): Promise<Blob> {
     console.error('PDF to Excel error:', err);
     throw new Error('Failed to convert PDF to Excel');
   }
-}
-
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
